@@ -5,18 +5,18 @@
  */
 
 import { brandString } from '@deepseek-ai/dsh-brand'
-import { contentHasImage, IMAGE_OFFLOAD_REQUIRED_CODE, LlmError, offloadedImageText, projectOffloadedImages, requestImageHandleText, requiredImageOffload } from '@deepseek-ai/dsh-llm'
+import { contentHasImage, LlmError, offloadedImageText, requestImageHandleText } from '@deepseek-ai/dsh-llm'
 import type { ContentBlock, GenerateOptions, ImageAttachmentAccessResolver, Message, ToolCallId } from '@deepseek-ai/dsh-llm'
 import type {
   AttachmentId,
   AttachmentStore,
   ImageAttachmentRef,
-  ImageRequestTarget,
   RequestImageAttachment,
 } from '@deepseek-ai/dsh-attachment'
 import type { Context as PiContext, ImageContent, Message as PiMessage, TextContent, Tool as PiTool } from '@earendil-works/pi-ai'
 import { toPiAssistant } from './replay.ts'
-import { requestImageDimensions } from '@deepseek-ai/dsh-attachment'
+import { isOffloaded, projectRequestImages, requestImageTarget } from './host-image-offload.ts'
+import type { RequestImageBudget } from './host-image-offload.ts'
 import { DEFAULT_REQUEST_IMAGE_MAX_BYTES, DEFAULT_REQUEST_IMAGE_PIXEL_BUDGET } from './config.ts'
 
 /** Join the text blocks of a harness message. */
@@ -96,7 +96,7 @@ function collectImageRefs(
 ): void {
   for (const block of blocks) {
     if (block.type === 'image') {
-      if (block.offloaded !== true) refs.set(block.attachment.attachmentId, block.attachment)
+      if (!isOffloaded(block)) refs.set(block.attachment.attachmentId, block.attachment)
     } else if (block.type === 'tool-result') {
       collectImageRefs(block.content, refs)
     }
@@ -230,17 +230,7 @@ export interface PiImageRequestContext {
 }
 
 /** Per-route budgets from which each request image's target is derived. */
-export interface PiImageRequestBudget {
-  /** Total-pixel budget; larger sources are downscaled proportionally. */
-  maxPixels: number
-  /** Encoded-byte target for one request image. */
-  maxBytes: number
-}
-
-/** Deterministic request target for one source under the route budgets. */
-function requestImageTarget(ref: ImageAttachmentRef, budget: PiImageRequestBudget): ImageRequestTarget {
-  return { ...requestImageDimensions(ref.width, ref.height, budget.maxPixels), maxBytes: budget.maxBytes }
-}
+export type PiImageRequestBudget = RequestImageBudget
 
 /**
  * Convert text-only harness history to a synchronous pi-ai Context. Tool
@@ -262,7 +252,9 @@ export function toPiContext(
  * occurrences the surface marks offloaded become text placeholders; when the
  * retained occurrences' exact base64 payload still exceeds
  * `maxRequestImageBytes`, the call fails with `IMAGE_OFFLOAD_REQUIRED` naming
- * how many more oldest occurrences must be offloaded.
+ * how many more oldest occurrences must be offloaded. A harness release with
+ * no surface-owned offload instead has this conversion drop its own oldest
+ * occurrences to fit; see {@link projectRequestImages}.
  * @param options - the harness request; `options.system`, else a leading `system` message, maps to pi-ai's single `systemPrompt` slot.
  * @param images - attachment provider, current path resolver, and request limits.
  * @param onReplayDegrade - forwarded to {@link toPiAssistant} for each assistant message.
@@ -296,22 +288,10 @@ async function toPiContextWithImages(
   assertSupportedImageRoles(options.messages)
   const split = splitSystemPrompt(options)
   const requestImages = await prepareRequestImages(split.messages, attachments, requestImagePolicy, options.signal)
-  if (maxRequestImageBytes !== undefined) {
-    const offloadImages = requiredImageOffload(
-      split.messages,
-      { representation: 'base64', maxBytes: maxRequestImageBytes },
-      block => (requestImages.get(block.attachment.attachmentId) as RequestImageAttachment).bytes,
-    )
-    if (offloadImages > 0) {
-      throw new LlmError(
-        `pi-ai request images exceed the ${maxRequestImageBytes}-byte base64 bound; ${offloadImages} more oldest occurrence(s) must be offloaded.`,
-        IMAGE_OFFLOAD_REQUIRED_CODE,
-        { offloadImages },
-      )
-    }
-  }
-  const exactMessages = projectOffloadedImages(
+  const exactMessages = projectRequestImages(
     split.messages,
+    maxRequestImageBytes,
+    ref => (requestImages.get(ref.attachmentId) as RequestImageAttachment).bytes,
     ref => offloadedImageText(ref, resolveImageAccess(ref)),
   )
   const toolNames = new Map<ToolCallId, string>()

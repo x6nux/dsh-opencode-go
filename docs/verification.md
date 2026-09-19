@@ -2,6 +2,8 @@
 
 Verified on macOS with Node.js 24.14.1 and npm-installed DSH 0.1.6-alpha.1. The plugin's dependencies came from npm, with no workspace aliases, symlinks into a checkout, or unpublished DSH exports.
 
+One published plugin build supports DSH `0.1.5-rc.1`, `0.1.5-rc.2`, `0.1.6-alpha.1`, and `0.1.6-alpha.2`; the peer ranges name exactly those releases and `src/conversion/host-image-offload.ts` resolves the image-offload vocabulary of whichever one is installed. Development declarations come from `0.1.6-alpha.2`. See "Multi-release verification" below for what was run against each.
+
 ## Local checks
 
 - `npm run typecheck`: strict Host and Client programs against installed declarations.
@@ -57,6 +59,25 @@ The dynamic catalog change passes all 140 tests plus the Host/Client build. Its 
 
 A read-only check against the live OpenCode Go listing and models.dev resolved 36 of 38 advertised ids, including `union-alpha`; `deepseek-flash` and `hy3-preview` had no metadata. Those ids remain visible with a configuration diagnostic. This check did not send a generation request or establish that every advertised id is currently callable for an account.
 
+## Multi-release verification
+
+Each supported release was installed into its own pnpm profile, the layout `dsh plugin add` produces, so the plugin's peer resolution answers with the harness the profile carries rather than with the newest release in the range:
+
+```sh
+npm init -y
+pnpm add --ignore-scripts @deepseek-ai/dsh@<release> @deepseek-ai/dsh-llm@<release> \
+  @deepseek-ai/cordis-plugin-loader@1.0.3 @deepseek-ai/cordis@4.0.2
+pnpm add --ignore-scripts /absolute/path/to/dsh-opencode-go-<version>.tgz
+```
+
+Resolution was read back from the installed plugin's own require path before each run; every profile answered with its own release. `npm run verify:installed` then passed on all four: package resolution, catalog, streamed text, session headers, attribution, authorization, and route removal.
+
+The Host and Client type programs compile against both `0.1.5-rc.2` and `0.1.6-alpha.2` declarations. `tests/host-image-offload.spec.ts` covers both offload branches by shaping the module graph like the release each serves, so it states the same expectations whichever harness is installed.
+
+Under `0.1.5-rc.2`, four cases in `tests/conversion-context.spec.ts` fail by design: they assert the `0.1.6` surface-owned contract — an `IMAGE_OFFLOAD_REQUIRED` refusal and request versions skipped for marked occurrences — which that release does not have. Every other conversion case passes there against the real `0.1.5` modules.
+
+`npm run verify:headless` was not completed for this change: the CLI in these temporary pnpm profiles exits silently without writing a profile home, so the headless launcher path is unverified across releases. The installed smoke covers the same adapter through the real Cordis Loader.
+
 ## Remaining limits
 
-Real paid OpenCode Go completions, Desktop, non-macOS platforms, and other DSH releases are not verified. The automated gateway tests preserve the adapter's request and replay semantics but cannot establish account validity or live provider availability.
+Real paid OpenCode Go completions, Desktop, non-macOS platforms, and DSH releases outside the four named above are not verified. The Web settings page and usage pill were exercised only against `0.1.6-alpha.*`; on `0.1.5-rc.*` the Client program compiles and the bundled client modules are unchanged, but no browser session was run. The automated gateway tests preserve the adapter's request and replay semantics but cannot establish account validity or live provider availability.

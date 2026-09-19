@@ -328,9 +328,12 @@ describe('llm-opencode-go plugin mount', () => {
       })],
     })) chunks.push(chunk)
 
+    // The target carries both harness generations' vocabularies: the exact
+    // dimensions 0.1.6 reads and the pixel budget 0.1.5 reads.
     expect(readImageRequest).toHaveBeenCalledWith(ref, {
       width: 2048,
       height: 2048,
+      maxPixels: 2048 * 2048,
       maxBytes: 1024 * 1024,
     }, expect.any(AbortSignal))
     expect(JSON.stringify(gateway.bodies[0])).toContain(MODEL_IMAGE_PATH)
